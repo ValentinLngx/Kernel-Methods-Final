@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
-from cvxopt import matrix, solvers
+import math
+from collections import Counter
 
 def compute_context_embedding(sequences):
     embedding_matrix = []
@@ -115,6 +116,82 @@ def compute_feature_matrix(sequences,k):
 
 def spectrum_kernel_matrix(features):
     return features @ features.T
+
+#reverse complement & canonical k-mers
+def reverse_complement(seq):
+    mapping = {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C'}
+    return ''.join(mapping[base] for base in reversed(seq))
+
+def canonical_kmer(kmer):
+    rc = reverse_complement(kmer)
+    return min(kmer, rc)
+
+# k-mer counting with TF--IDF weighting
+def build_kmer_counts(seqs, k=5, use_canonical=True):
+    counters = []
+    for s in seqs:
+        c = Counter()
+        for i in range(len(s) - k + 1):
+            kmer = s[i:i+k]
+            if use_canonical:
+                kmer = canonical_kmer(kmer)
+            c[kmer] += 1
+        counters.append(c)
+    return counters
+
+def apply_tfidf(counters):
+    N = len(counters)
+    df = Counter()
+    for c in counters:
+        for key in c:
+            df[key] += 1
+    idf = {key: math.log((N+1)/(df[key]+1)) + 1 for key in df}
+    tfidf_counters = []
+    for c in counters:
+        new_c = Counter({key: count * idf[key] for key, count in c.items()})
+        tfidf_counters.append(new_c)
+    return tfidf_counters
+
+def build_improved_kmer_counts(seqs, k=5, use_tfidf=True):
+    counters = build_kmer_counts(seqs, k=k, use_canonical=True)
+    if use_tfidf:
+        counters = apply_tfidf(counters)
+    return counters
+
+#kernel computation and normalization
+def compute_kernel_matrix(counters_train, counters_test=None):
+    if counters_test is None:
+        n = len(counters_train)
+        K = np.zeros((n, n), dtype=np.float64)
+        for i in range(n):
+            for j in range(i, n):
+                common = counters_train[i].keys() & counters_train[j].keys()
+                val = sum(counters_train[i][key] * counters_train[j][key] for key in common)
+                K[i, j] = val
+                K[j, i] = val
+        return K
+    else:
+        n_test = len(counters_test)
+        n_train = len(counters_train)
+        K = np.zeros((n_test, n_train), dtype=np.float64)
+        for i in range(n_test):
+            for j in range(n_train):
+                common = counters_test[i].keys() & counters_train[j].keys()
+                K[i, j] = sum(counters_test[i][key] * counters_train[j][key] for key in common)
+        return K
+
+def normalize_kernel(K, diag_train=None, diag_test=None):
+    epsilon = 1e-8
+    if diag_train is None and diag_test is None:
+        diag = np.sqrt(np.diag(K))
+        diag[diag < epsilon] = epsilon
+        return K / (diag[:, None] * diag[None, :])
+    else:
+        diag_train = np.array(diag_train)
+        diag_test = np.array(diag_test)
+        diag_train[diag_train < epsilon] = epsilon
+        diag_test[diag_test < epsilon] = epsilon
+        return K / (diag_test[:, None] * diag_train[None, :])
 
 # Prediction function
 
